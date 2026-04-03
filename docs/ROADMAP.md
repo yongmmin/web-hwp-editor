@@ -6,7 +6,7 @@
 - [x] 외부 변환기 기반 원본 뷰어 분리 방식은 채택하지 않음
 - [x] 세부 기준 문서: [LAYOUT_PRESERVATION_STRATEGY.md](./LAYOUT_PRESERVATION_STRATEGY.md)
 
-## 현재 상태: MVP
+## 현재 상태: MVP+
 
 기본 워크플로우 완성:
 - [x] HWP/HWPX 파일 업로드 및 파싱
@@ -17,6 +17,12 @@
 - [x] HWPX 표 가져오기 및 렌더링
 - [x] HWPX 이미지 가져오기 및 렌더링
 - [x] HWPX 머리글/바닥글 가져오기 및 표시
+
+MVP 이후 추가 완료:
+- [x] 찾기/바꾸기 (`FindReplaceBar`, `findReplaceStore`)
+- [x] 문장 다듬기 AI 패널 (`RefinementPanel`, `refinementStore`)
+- [x] HWP 원본 읽기 전용 뷰 (`HwpReadonlyViewer`, `sourceMode: 'hwp-original-readonly'`)
+- [x] HWP → ODT 브리지 파이프라인 (`odtParser.ts`, `scripts/hwp-render-bridge.mjs`)
 
 ---
 

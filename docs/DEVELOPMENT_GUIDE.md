@@ -76,7 +76,8 @@ src/
 │   ├── upload/                 # FileUploader
 │   ├── editor/                 # DocumentEditor, EditorToolbar
 │   │   └── extensions/         # TipTap 확장
-│   └── suggestions/            # SuggestionPanel, SuggestionItem
+│   ├── suggestions/            # SuggestionPanel, SuggestionItem
+│   └── refinement/             # RefinementPanel
 ├── services/
 │   ├── hwp/                    # HWP/HWPX 파싱/내보내기
 │   └── ollama/                 # OLLAMA API 클라이언트

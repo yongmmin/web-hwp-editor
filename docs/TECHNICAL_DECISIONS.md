@@ -2,7 +2,7 @@
 
 ## ADR-001: 프레임워크 — React + TypeScript + Vite
 
-**결정**: React 19 + TypeScript + Vite 5
+**결정**: React 18.3.1 + TypeScript 5.6 + Vite 5
 
 **이유**:
 - Vite의 빠른 HMR으로 개발 생산성 확보

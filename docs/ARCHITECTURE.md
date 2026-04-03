@@ -90,26 +90,25 @@ App
     │   └── FileUploader
     │
     └── [view === 'editor']
-        ├── Sidebar
-        │   ├── 문서 정보
-        │   └── 문서 개요
         ├── DocumentEditor
         │   ├── EditorToolbar
+        │   ├── FindReplaceBar (조건부)
         │   └── EditorContent (TipTap + custom nodes)
-        ├── DocumentPreview (조건부)
-        └── SuggestionPanel (조건부)
-            ├── SuggestionItem[]
-            └── PreviewHighlight
+        ├── SuggestionPanel (조건부)
+        │   ├── SuggestionItem[]
+        │   └── PreviewHighlight
+        └── RefinementPanel (조건부)
 ```
 
 ## 상태 관리 구조
 
 ### documentStore
 - `view`: 현재 화면 (`'upload'` | `'editor'`)
-- `document`: 파싱된 문서 데이터
+- `document`: 파싱된 문서 데이터 (`ParsedDocument` — `sourceMode` 포함)
 - `fileName`: 원본 파일명
-- `showPreview`: 미리보기 토글
-- `originalHtml`: 원본 HTML (diff용)
+- `originalHtml`: 원본 HTML (편집 전 복원용)
+
+> `document.sourceMode`: `'editable'` (기본) | `'hwp-original-readonly'` (HWP 원본 읽기 전용 뷰)
 
 ### 파싱 결과 HTML 규칙
 
