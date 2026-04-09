@@ -1,4 +1,4 @@
-import { FileText, Download, FolderOpen, Wifi, WifiOff } from 'lucide-react';
+import { FileText, FolderOpen, Wifi, WifiOff } from 'lucide-react';
 import { useDocumentStore } from '../../stores/documentStore';
 import { ModelPicker } from './ModelPicker';
 import type { OllamaModel } from '../../types';
@@ -9,8 +9,6 @@ interface HeaderProps {
   selectedModel: string | null;
   onSelectModel: (name: string) => void;
   onRefreshModels: () => void;
-  onExport: () => void;
-  exportDisabled?: boolean;
 }
 
 export function Header({
@@ -19,8 +17,6 @@ export function Header({
   selectedModel,
   onSelectModel,
   onRefreshModels,
-  onExport,
-  exportDisabled = false,
 }: HeaderProps) {
   const { view, fileName, reset } = useDocumentStore();
 
@@ -38,11 +34,6 @@ export function Header({
           <span className="text-sm text-white/70 truncate max-w-[240px]">{fileName}</span>
 
           <div className="flex-1" />
-
-          <HeaderButton onClick={onExport} title="HWPX로 내보내기" disabled={exportDisabled}>
-            <Download className="w-3.5 h-3.5" />
-            <span>내보내기</span>
-          </HeaderButton>
 
           <HeaderButton onClick={reset} title="새 파일 열기">
             <FolderOpen className="w-3.5 h-3.5" />

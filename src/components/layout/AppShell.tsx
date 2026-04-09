@@ -11,8 +11,6 @@ import { useSuggestionStore } from '../../stores/suggestionStore';
 import { useRefinementStore } from '../../stores/refinementStore';
 import { useOllama } from '../../hooks/useOllama';
 import { useFileUpload } from '../../hooks/useFileUpload';
-import { exportToHwpx } from '../../services/hwp/hwpxExporter';
-import { downloadBlob, getExportFilename } from '../../utils/file';
 
 export function AppShell() {
   const { view, document: doc, fileName, isLoading } = useDocumentStore();
@@ -53,16 +51,6 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [closeSuggestion, closeRefinement]);
 
-  const handleExport = useCallback(async () => {
-    if (doc?.sourceMode === 'hwp-original-readonly') return;
-    const editorEl = document.querySelector('.tiptap');
-    if (!editorEl) return;
-
-    const html = editorEl.innerHTML;
-    const blob = await exportToHwpx(html, doc?.rawZipData, doc?.hwpxExportContext);
-    downloadBlob(blob, getExportFilename(fileName));
-  }, [doc, fileName]);
-
   if (view === 'upload') {
     return (
       <div className="h-screen flex flex-col bg-[#e8e8e8]">
@@ -72,7 +60,6 @@ export function AppShell() {
           selectedModel={selectedModel}
           onSelectModel={selectModel}
           onRefreshModels={refresh}
-          onExport={handleExport}
         />
         <main className="flex-1 flex items-center justify-center">
           <FileUploader />
@@ -90,8 +77,6 @@ export function AppShell() {
         selectedModel={selectedModel}
         onSelectModel={selectModel}
         onRefreshModels={refresh}
-        onExport={handleExport}
-        exportDisabled={doc?.sourceMode === 'hwp-original-readonly'}
       />
       <div className="flex-1 flex overflow-hidden relative">
         <EditorArea
