@@ -55,6 +55,12 @@ export async function exportToHwpx(
   rawOdtContentXml?: string,
   rawOdtStylesXml?: string,
 ): Promise<Blob> {
+  // ── diagnostic ─────────────────────────────────────────────────────────────
+  const hasTable = html.includes('<table');
+  console.log('[export] path:', originalZipData ? 'HWPX-patch' : rawOdtContentXml ? 'HWP+ODT' : 'HWP-html');
+  console.log('[export] html has table:', hasTable, '| html length:', html.length);
+  // ───────────────────────────────────────────────────────────────────────────
+
   if (originalZipData) {
     return exportWithOriginalStructure(html, originalZipData, exportContext);
   }
@@ -71,10 +77,14 @@ async function exportWithOriginalStructure(
   const paragraphTextById = extractParagraphTextById(html);
   const exportEntries = getContextExportEntries(zip, exportContext);
 
+  console.log('[export:HWPX-patch] exportEntries:', exportEntries.length,
+    '| body:', exportEntries.filter(e => e.region === 'body').map(e => e.path));
+
   if (exportEntries.length > 0) {
     await patchRegionEntries(zip, exportEntries, 'header', groups.headers, paragraphTextById);
     const bodyEntries = exportEntries.filter((item) => item.region === 'body');
     if (bodyEntries.length === 0) {
+      console.warn('[export:HWPX-patch] no body entries — falling back to htmlToHwpxSection');
       zip.file('Contents/sec0.xml', htmlToHwpxSection(html));
     } else {
       await patchRegionEntries(zip, exportEntries, 'body', groups.body, paragraphTextById);
@@ -372,11 +382,13 @@ async function exportMinimalHwpx(
   let sectionXml: string;
   if (rawOdtContentXml) {
     const odtResult = tryOdtToHwpxSection(rawOdtContentXml, rawOdtStylesXml ?? '', html);
+    console.log('[export:HWP] ODT path result:', odtResult ? `ok (${odtResult.length} chars, hasTbl:${odtResult.includes('hp:tbl')})` : 'null→falling back to HTML');
     sectionXml = odtResult ?? htmlToHwpxSection(html);
   } else {
     sectionXml = htmlToHwpxSection(html);
   }
 
+  console.log('[export:HWP] final sectionXml has hp:tbl:', sectionXml.includes('hp:tbl'));
   zip.file('Contents/sec0.xml', sectionXml);
 
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
