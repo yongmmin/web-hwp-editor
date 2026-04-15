@@ -1,13 +1,18 @@
 import CFB from 'cfb';
 import pako from 'pako';
-import type { PageLayout, ParsedDocument } from '../../types';
+import type { Hwp5ExportMeta, PageLayout, ParsedDocument } from '../../types';
+import {
+  collectParagraphBlocks,
+  readRecordHeaders,
+  TAG_PARA_HEADER,
+} from '../export/hwp5Records';
 
-// ─── HWP 태그 ID ───
+// ─── HWP 태그 ID — shared with src/services/export/hwp5Records.ts ───
+// TAG_PARA_HEADER is imported from hwp5Records; the rest remain local.
 const TAG_CHAR_SHAPE = 21;
 const TAG_BORDER_FILL = 20;
 const TAG_FACE_NAME = 19;
 const TAG_PARA_SHAPE = 25;
-const TAG_PARA_HEADER = 66;
 const TAG_PARA_TEXT = 67;
 const TAG_PARA_CHAR_SHAPE = 68;
 const TAG_CTRL_HEADER = 71;
@@ -110,6 +115,7 @@ export async function parseHwpLegacy(buffer: ArrayBuffer): Promise<ParsedDocumen
       pageLayout: rendered.pageLayout,
       metadata,
       originalFormat: 'hwp',
+      hwp5ExportMeta: rendered.exportMeta,
     };
   } catch (e) {
     console.error('HWP 파싱 오류:', e);
@@ -455,9 +461,10 @@ function renderAllSections(
   cfb: CFB.CFB$Container,
   comp: boolean,
   ctx: Ctx
-): { html: string; pageLayout?: PageLayout } {
+): { html: string; pageLayout?: PageLayout; exportMeta: Hwp5ExportMeta } {
   const parts: string[] = [];
   let pageLayout: PageLayout | undefined;
+  const exportSections: Hwp5ExportMeta['sections'] = [];
   for (let s = 0; s < 256; s++) {
     const data = getStream(cfb, `/BodyText/Section${s}`, comp);
     if (!data) break;
@@ -467,9 +474,28 @@ function renderAllSections(
     // 섹션 간 페이지 분리 삽입 (첫 섹션 제외)
     if (parts.length > 0) parts.push('<hr class="hwp-page-break" />');
     parts.push(renderSection(recs, ctx, sectionPageLayout ?? pageLayout));
+
+    // Collect per-section paragraph byte ranges for in-place export.
+    // We re-walk the stream via the shared record header scanner so the
+    // offsets come from the exact same bytes the writer will patch later.
+    const headers = readRecordHeaders(data);
+    const blocks = collectParagraphBlocks(headers, data.length);
+    exportSections.push({
+      streamPath: `/BodyText/Section${s}`,
+      paragraphs: blocks.map((b) => ({
+        startOffset: b.startOffset,
+        endOffset: b.endOffset,
+        hasControls: b.hasControls,
+      })),
+    });
   }
-  return { html: parts.join(''), pageLayout };
+  return {
+    html: parts.join(''),
+    pageLayout,
+    exportMeta: { sections: exportSections },
+  };
 }
+
 
 function renderSection(recs: Rec[], ctx: Ctx, pageLayout?: PageLayout): string {
   const out: string[] = [];

@@ -64,7 +64,7 @@ async function parseHwp(buffer: ArrayBuffer, filename: string): Promise<ParsedDo
   if (odtResult) {
     const enhancedHtml = tryInjectLegacyColWidths(odtResult.html, legacyResult?.html);
     return {
-      ...legacyResult,                  // metadata, pageLayout from JS parser
+      ...legacyResult,                  // metadata, pageLayout, hwp5ExportMeta from JS parser
       html: enhancedHtml,               // high-quality editable HTML from ODT (+ injected col widths)
       originalViewHtml: originalViewHtml ?? undefined,
       sourceMode: 'editable',
