@@ -486,6 +486,7 @@ function renderAllSections(
         startOffset: b.startOffset,
         endOffset: b.endOffset,
         hasControls: b.hasControls,
+        origText: extractBlockOrigText(data, headers, b),
       })),
     });
   }
@@ -494,6 +495,56 @@ function renderAllSections(
     pageLayout,
     exportMeta: { sections: exportSections },
   };
+}
+
+/**
+ * Decode the plaintext contained in a paragraph block by concatenating every
+ * level-1 PARA_TEXT record inside [block.startOffset, block.endOffset).
+ *
+ * Used by the HWP5 export writer for text-based matching between TipTap
+ * paragraphs and the original HWP5 structure when paragraph counts disagree
+ * (which is the norm when the edit HTML came from the pyhwp ODT bridge).
+ */
+function extractBlockOrigText(
+  data: Uint8Array,
+  headers: ReturnType<typeof readRecordHeaders>,
+  block: { startOffset: number; endOffset: number },
+): string {
+  let out = '';
+  for (const rec of headers) {
+    if (rec.headerOffset < block.startOffset) continue;
+    if (rec.headerOffset >= block.endOffset) break;
+    if (rec.tagId !== TAG_PARA_TEXT || rec.level !== 1) continue;
+    const bytes = data.subarray(rec.dataOffset, rec.dataOffset + rec.size);
+    out += decodeHwpParaText(bytes);
+  }
+  // HWP5 paragraphs typically end with a trailing newline; strip for matching.
+  return out.endsWith('\n') ? out.slice(0, -1) : out;
+}
+
+/**
+ * Decode a PARA_TEXT payload (UTF-16LE) while skipping the inline control
+ * markers HWP5 embeds (codes < 0x20 except TAB/LF/CR). Returns plain text
+ * suitable for comparison with editor-produced paragraph text.
+ */
+function decodeHwpParaText(bytes: Uint8Array): string {
+  // Filter out control codes so comparison is stable.
+  const chars: number[] = [];
+  for (let i = 0; i + 1 < bytes.length; i += 2) {
+    const code = bytes[i] | (bytes[i + 1] << 8);
+    if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) continue;
+    chars.push(code);
+  }
+  try {
+    const buf = new Uint8Array(chars.length * 2);
+    for (let i = 0; i < chars.length; i += 1) {
+      buf[i * 2] = chars[i] & 0xff;
+      buf[i * 2 + 1] = (chars[i] >>> 8) & 0xff;
+    }
+    return UTF16LE_DECODER.decode(buf);
+  } catch {
+    return String.fromCharCode(...chars);
+  }
 }
 
 

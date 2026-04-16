@@ -44,6 +44,8 @@ export interface Hwp5ExportMeta {
       endOffset: number;
       /** True if this paragraph contains control records (table/image/etc.) */
       hasControls: boolean;
+      /** Decoded plaintext of the PARA_TEXT record (for text-based matching). */
+      origText: string;
     }>;
   }>;
 }

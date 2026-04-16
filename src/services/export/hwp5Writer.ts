@@ -18,8 +18,9 @@ import {
  *  - 각 /BodyText/Section# 스트림을 pako로 inflateRaw (압축 여부는 FileHeader
  *    플래그로 판정)
  *  - meta.paragraphs가 기록한 바이트 범위를 기준으로 단락을 순회
- *  - TipTap JSON의 단락 순서와 HWP5 단락 수가 **정확히 일치**할 때만 패치
- *    (insert/delete는 후속 iteration 과제 — 현재는 안전하게 원본 유지)
+ *  - 편집 HTML의 단락과 HWP5 단락을 **텍스트 기반 LCS 정렬**로 매칭.
+ *    파이프라인(ODT 브리지 vs 레거시 파서)에 따라 단락 수가 다르더라도,
+ *    원문 그대로인 단락은 그대로 두고 변경된 단락만 패치함.
  *  - 패치 대상 단락이 아래 조건을 모두 만족할 때만 실제 교체:
  *       · hasControls === false (표·이미지·컨트롤 없음)
  *       · PARA_TEXT 레코드가 정확히 1개
@@ -45,28 +46,27 @@ export async function writeHwp5(
   }
 
   const edited = collectEditedParagraphs(json);
-  const origCount = meta.sections.reduce((s, sec) => s + sec.paragraphs.length, 0);
+  const patchMap = alignForPatch(meta, edited);
 
-  if (edited.length !== origCount) {
-    console.warn(
-      `[hwp5Writer] paragraph count mismatch: editor=${edited.length} hwp5=${origCount}. ` +
-        `Returning original bytes unchanged. (insert/delete는 다음 이터레이션)`
-    );
+  console.log(
+    `[hwp5Writer] editor paragraphs=${edited.length}, ` +
+      `hwp paragraphs=${meta.sections.reduce((s, sec) => s + sec.paragraphs.length, 0)}, ` +
+      `patches=${patchMap.size}`
+  );
+
+  if (patchMap.size === 0) {
     return new Blob([originalBuffer], { type: 'application/x-hwp' });
   }
 
   const cfb = CFB.read(new Uint8Array(originalBuffer), { type: 'array' });
   const compressed = isHwpCompressed(cfb);
 
-  let editedCursor = 0;
   let anyChanges = false;
 
-  for (const sec of meta.sections) {
+  for (let secIdx = 0; secIdx < meta.sections.length; secIdx += 1) {
+    const sec = meta.sections[secIdx];
     const rawStream = getStreamBytes(cfb, sec.streamPath);
-    if (!rawStream) {
-      editedCursor += sec.paragraphs.length;
-      continue;
-    }
+    if (!rawStream) continue;
 
     const decompressed = compressed ? pako.inflateRaw(rawStream) : rawStream;
 
@@ -74,25 +74,25 @@ export async function writeHwp5(
     let cursor = 0;
     let sectionDirty = false;
 
-    for (const block of sec.paragraphs) {
+    for (let paraIdx = 0; paraIdx < sec.paragraphs.length; paraIdx += 1) {
+      const block = sec.paragraphs[paraIdx];
       if (block.startOffset > cursor) {
         parts.push(decompressed.slice(cursor, block.startOffset));
       }
 
       const origBlock = decompressed.slice(block.startOffset, block.endOffset);
-      const editedPara = edited[editedCursor++];
+      const newText = patchMap.get(patchKey(secIdx, paraIdx));
 
-      if (block.hasControls) {
-        // 표/이미지 포함 단락은 안전하게 원본 유지
-        parts.push(origBlock);
-      } else {
-        const patched = tryPatchParagraphBlock(origBlock, editedPara.text);
+      if (newText != null && !block.hasControls) {
+        const patched = tryPatchParagraphBlock(origBlock, newText);
         if (patched) {
           parts.push(patched);
           sectionDirty = true;
         } else {
           parts.push(origBlock);
         }
+      } else {
+        parts.push(origBlock);
       }
 
       cursor = block.endOffset;
@@ -195,6 +195,125 @@ function collectEditedParagraphs(json: JSONContent): EditedParagraph[] {
     for (const child of node.content) s += collectText(child);
     return s;
   }
+}
+
+// ─── HWP ↔ editor paragraph alignment ───────────────────────────────────────
+
+/**
+ * Align HWP5 paragraphs with editor paragraphs using LCS over normalized text,
+ * then emit a patch map: `{secIdx}:{paraIdx}` → new text. Only paragraphs whose
+ * original text clearly differs from the paired editor paragraph are included;
+ * unchanged and control-bearing paragraphs are skipped. Paragraphs that cannot
+ * be paired (pure inserts or deletes) are left alone — the writer preserves
+ * the original bytes for them.
+ */
+function alignForPatch(
+  meta: Hwp5ExportMeta,
+  edited: EditedParagraph[]
+): Map<string, string> {
+  const patch = new Map<string, string>();
+
+  const flat: Array<{
+    secIdx: number;
+    paraIdx: number;
+    origText: string;
+    normText: string;
+    hasControls: boolean;
+  }> = [];
+  meta.sections.forEach((sec, secIdx) => {
+    sec.paragraphs.forEach((p, paraIdx) => {
+      flat.push({
+        secIdx,
+        paraIdx,
+        origText: p.origText,
+        normText: normalizeForMatch(p.origText),
+        hasControls: p.hasControls,
+      });
+    });
+  });
+
+  const edNorm = edited.map((e) => normalizeForMatch(e.text));
+
+  const anchors: Array<[number, number]> = [
+    [-1, -1],
+    ...lcsPairs(
+      flat.map((f) => f.normText),
+      edNorm
+    ),
+    [flat.length, edited.length],
+  ];
+
+  for (let k = 1; k < anchors.length; k += 1) {
+    const [prevH, prevE] = anchors[k - 1];
+    const [curH, curE] = anchors[k];
+
+    const hwpGap: number[] = [];
+    for (let i = prevH + 1; i < curH; i += 1) hwpGap.push(i);
+    const edGap: number[] = [];
+    for (let j = prevE + 1; j < curE; j += 1) edGap.push(j);
+
+    const pairs = Math.min(hwpGap.length, edGap.length);
+    for (let p = 0; p < pairs; p += 1) {
+      const hwpFlat = flat[hwpGap[p]];
+      if (hwpFlat.hasControls) continue;
+      const newText = edited[edGap[p]].text;
+      if (newText === hwpFlat.origText) continue;
+      patch.set(patchKey(hwpFlat.secIdx, hwpFlat.paraIdx), newText);
+    }
+  }
+
+  return patch;
+}
+
+function patchKey(secIdx: number, paraIdx: number): string {
+  return `${secIdx}:${paraIdx}`;
+}
+
+/**
+ * Normalize a paragraph's plain text for equality matching. The HWP5 decoder
+ * and the ODT-derived HTML pipeline tend to disagree on soft whitespace
+ * (leading/trailing spaces, collapsed runs of spaces/tabs, NBSP), so we
+ * normalize both sides the same way before running LCS.
+ */
+function normalizeForMatch(s: string): string {
+  return s.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Longest Common Subsequence over two string arrays, returning the aligned
+ * index pairs (i, j) such that a[i] === b[j] and the pairs are strictly
+ * increasing in both dimensions. Classic O(n·m) DP — fine for the hundreds of
+ * paragraphs we expect in a single document.
+ */
+function lcsPairs(a: string[], b: string[]): Array<[number, number]> {
+  const n = a.length;
+  const m = b.length;
+  if (n === 0 || m === 0) return [];
+  const w = m + 1;
+  const dp = new Uint32Array((n + 1) * w);
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      dp[i * w + j] =
+        a[i - 1] === b[j - 1]
+          ? dp[(i - 1) * w + (j - 1)] + 1
+          : Math.max(dp[(i - 1) * w + j], dp[i * w + (j - 1)]);
+    }
+  }
+  const pairs: Array<[number, number]> = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) {
+      pairs.push([i - 1, j - 1]);
+      i -= 1;
+      j -= 1;
+    } else if (dp[(i - 1) * w + j] >= dp[i * w + (j - 1)]) {
+      i -= 1;
+    } else {
+      j -= 1;
+    }
+  }
+  return pairs.reverse();
 }
 
 // ─── Paragraph block patching ───────────────────────────────────────────────
