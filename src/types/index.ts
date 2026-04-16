@@ -48,6 +48,12 @@ export interface Hwp5ExportMeta {
       origText: string;
     }>;
   }>;
+  /**
+   * Paragraph texts as they appear in the editor HTML at first load.
+   * Enables same-pipeline diffing (current editor vs original editor)
+   * so we don't rely on cross-pipeline text matching (ODT vs legacy).
+   */
+  editorOriginalTexts?: string[];
 }
 
 export interface ParsedDocument {

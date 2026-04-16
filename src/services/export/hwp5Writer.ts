@@ -200,49 +200,122 @@ function collectEditedParagraphs(json: JSONContent): EditedParagraph[] {
 
 // ─── HWP ↔ editor paragraph alignment ───────────────────────────────────────
 
+interface FlatHwpPara {
+  secIdx: number;
+  paraIdx: number;
+  origText: string;
+  hasControls: boolean;
+}
+
 /**
- * Align HWP5 paragraphs with editor paragraphs using LCS over normalized text,
- * then emit a patch map: `{secIdx}:{paraIdx}` → new text. Only paragraphs whose
- * original text clearly differs from the paired editor paragraph are included;
- * unchanged and control-bearing paragraphs are skipped. Paragraphs that cannot
- * be paired (pure inserts or deletes) are left alone — the writer preserves
- * the original bytes for them.
+ * Decide which HWP5 paragraphs to patch and with what new text.
+ *
+ * Two strategies:
+ *
+ * 1) **Editor-diff** (preferred, requires `meta.editorOriginalTexts`):
+ *    Compares current editor texts with the snapshot taken at parse time —
+ *    both come from the same ODT pipeline, so equality comparison is reliable.
+ *    Changed editor positions are mapped to HWP5 paragraphs proportionally.
+ *
+ * 2) **Cross-pipeline LCS** (fallback):
+ *    Runs LCS between HWP5 origTexts and current editor texts after aggressive
+ *    normalization. Used when the editor-original snapshot is unavailable
+ *    (e.g. file was parsed before this feature existed).
  */
 function alignForPatch(
   meta: Hwp5ExportMeta,
   edited: EditedParagraph[]
 ): Map<string, string> {
-  const patch = new Map<string, string>();
+  const flat = flattenMeta(meta);
 
-  const flat: Array<{
-    secIdx: number;
-    paraIdx: number;
-    origText: string;
-    normText: string;
-    hasControls: boolean;
-  }> = [];
+  if (meta.editorOriginalTexts && meta.editorOriginalTexts.length > 0) {
+    return alignByEditorDiff(flat, edited, meta.editorOriginalTexts);
+  }
+  return alignByLCS(flat, edited);
+}
+
+function flattenMeta(meta: Hwp5ExportMeta): FlatHwpPara[] {
+  const flat: FlatHwpPara[] = [];
   meta.sections.forEach((sec, secIdx) => {
     sec.paragraphs.forEach((p, paraIdx) => {
       flat.push({
         secIdx,
         paraIdx,
         origText: p.origText,
-        normText: normalizeForMatch(p.origText),
         hasControls: p.hasControls,
       });
     });
   });
+  return flat;
+}
 
+// ─── Strategy 1: editor-diff (same-pipeline comparison) ─────────────────────
+
+function alignByEditorDiff(
+  flat: FlatHwpPara[],
+  edited: EditedParagraph[],
+  origEdTexts: string[]
+): Map<string, string> {
+  const patch = new Map<string, string>();
+  if (flat.length === 0) return patch;
+
+  // Find editor paragraphs whose text differs from the original snapshot.
+  const changedEditorIndices: Array<{ idx: number; newText: string }> = [];
+  const len = Math.min(origEdTexts.length, edited.length);
+  for (let i = 0; i < len; i += 1) {
+    if (normalizeForMatch(origEdTexts[i]) !== normalizeForMatch(edited[i].text)) {
+      changedEditorIndices.push({ idx: i, newText: edited[i].text });
+    }
+  }
+
+  console.log(
+    `[hwp5Writer:editorDiff] origEditorParas=${origEdTexts.length}, ` +
+      `currentEditorParas=${edited.length}, changed=${changedEditorIndices.length}, ` +
+      `hwpParas=${flat.length}`
+  );
+
+  if (changedEditorIndices.length === 0) return patch;
+
+  // Map each changed editor position to the nearest HWP5 paragraph.
+  // Proportional mapping: editorIdx / editorCount ≈ hwpIdx / hwpCount.
+  for (const change of changedEditorIndices) {
+    const ratio = origEdTexts.length > 1
+      ? change.idx / (origEdTexts.length - 1)
+      : 0;
+    const hwpIdx = Math.min(
+      Math.round(ratio * (flat.length - 1)),
+      flat.length - 1
+    );
+    const hwp = flat[hwpIdx];
+    if (hwp.hasControls) continue;
+    patch.set(patchKey(hwp.secIdx, hwp.paraIdx), change.newText);
+  }
+
+  console.log(`[hwp5Writer:editorDiff] patches=${patch.size}`);
+  return patch;
+}
+
+// ─── Strategy 2: cross-pipeline LCS (fallback) ─────────────────────────────
+
+function alignByLCS(
+  flat: FlatHwpPara[],
+  edited: EditedParagraph[]
+): Map<string, string> {
+  const patch = new Map<string, string>();
+
+  const hwpNorm = flat.map((f) => normalizeForMatch(f.origText));
   const edNorm = edited.map((e) => normalizeForMatch(e.text));
 
   const anchors: Array<[number, number]> = [
     [-1, -1],
-    ...lcsPairs(
-      flat.map((f) => f.normText),
-      edNorm
-    ),
+    ...lcsPairs(hwpNorm, edNorm),
     [flat.length, edited.length],
   ];
+
+  console.log(
+    `[hwp5Writer:LCS] hwpParas=${flat.length}, editorParas=${edited.length}, ` +
+      `lcsAnchors=${anchors.length - 2}`
+  );
 
   for (let k = 1; k < anchors.length; k += 1) {
     const [prevH, prevE] = anchors[k - 1];
@@ -263,6 +336,7 @@ function alignForPatch(
     }
   }
 
+  console.log(`[hwp5Writer:LCS] patches=${patch.size}`);
   return patch;
 }
 
@@ -270,22 +344,15 @@ function patchKey(secIdx: number, paraIdx: number): string {
   return `${secIdx}:${paraIdx}`;
 }
 
-/**
- * Normalize a paragraph's plain text for equality matching. The HWP5 decoder
- * and the ODT-derived HTML pipeline tend to disagree on soft whitespace
- * (leading/trailing spaces, collapsed runs of spaces/tabs, NBSP), so we
- * normalize both sides the same way before running LCS.
- */
 function normalizeForMatch(s: string): string {
-  return s.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  return s
+    .normalize('NFC')
+    .replace(/[\u00a0\u2002-\u200b\u202f\u205f\u3000]/g, ' ')
+    .replace(/[\t\r\n\v\f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-/**
- * Longest Common Subsequence over two string arrays, returning the aligned
- * index pairs (i, j) such that a[i] === b[j] and the pairs are strictly
- * increasing in both dimensions. Classic O(n·m) DP — fine for the hundreds of
- * paragraphs we expect in a single document.
- */
 function lcsPairs(a: string[], b: string[]): Array<[number, number]> {
   const n = a.length;
   const m = b.length;
@@ -329,16 +396,24 @@ function tryPatchParagraphBlock(
   newText: string
 ): Uint8Array | null {
   const headers = readRecordHeaders(origBlock);
-  if (headers.length === 0) return null;
+  if (headers.length === 0) {
+    console.log('[hwp5Writer:patch] skip: no headers');
+    return null;
+  }
 
-  // The first record must be the PARA_HEADER at offset 0 with level 0.
   const paraHeader = headers[0];
-  if (paraHeader.tagId !== TAG_PARA_HEADER || paraHeader.level !== 0) return null;
+  if (paraHeader.tagId !== TAG_PARA_HEADER || paraHeader.level !== 0) {
+    console.log('[hwp5Writer:patch] skip: first record not PARA_HEADER');
+    return null;
+  }
 
   const textRecords = headers.filter(
     (r) => r.tagId === TAG_PARA_TEXT && r.level === 1
   );
-  if (textRecords.length !== 1) return null;
+  if (textRecords.length !== 1) {
+    console.log(`[hwp5Writer:patch] skip: PARA_TEXT count=${textRecords.length} (need 1)`);
+    return null;
+  }
 
   const textRec = textRecords[0];
   const origTextBytes = origBlock.subarray(
@@ -346,7 +421,10 @@ function tryPatchParagraphBlock(
     textRec.dataOffset + textRec.size
   );
 
-  if (hasControlCodes(origTextBytes)) return null;
+  if (hasControlCodes(origTextBytes)) {
+    console.log('[hwp5Writer:patch] skip: control codes in PARA_TEXT');
+    return null;
+  }
 
   // Preserve trailing line-break char (0x0A) — the HWP storage format
   // typically ends each paragraph with one. Strip for the comparison and

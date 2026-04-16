@@ -63,8 +63,18 @@ async function parseHwp(buffer: ArrayBuffer, filename: string): Promise<ParsedDo
 
   if (odtResult) {
     const enhancedHtml = tryInjectLegacyColWidths(odtResult.html, legacyResult?.html);
+
+    // Capture editor paragraph texts for export diffing — these come from the
+    // same pipeline (ODT) as TipTap will use, so current-vs-original comparison
+    // is reliable even though the legacy parser's origText may differ.
+    const editorOriginalTexts = extractParagraphTextsFromHtml(enhancedHtml);
+    const hwp5ExportMeta = legacyResult?.hwp5ExportMeta
+      ? { ...legacyResult.hwp5ExportMeta, editorOriginalTexts }
+      : undefined;
+
     return {
-      ...legacyResult,                  // metadata, pageLayout, hwp5ExportMeta from JS parser
+      ...legacyResult,                  // metadata, pageLayout from JS parser
+      hwp5ExportMeta,                   // augmented with editorOriginalTexts
       html: enhancedHtml,               // high-quality editable HTML from ODT (+ injected col widths)
       originalViewHtml: originalViewHtml ?? undefined,
       sourceMode: 'editable',
@@ -202,6 +212,22 @@ function tryInjectLegacyColWidths(odtHtml: string, legacyHtml: string | undefine
     return odtDoc.body.firstElementChild?.innerHTML ?? odtHtml;
   } catch {
     return odtHtml;
+  }
+}
+
+/**
+ * Extract the plain text of every `<p>` and `<h1>`–`<h6>` element from an
+ * HTML string. Used to snapshot the editor's original paragraph texts at
+ * parse time so export can diff current vs original (same pipeline).
+ */
+function extractParagraphTextsFromHtml(html: string): string[] {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${html}</div>`, 'text/html');
+    const els = doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6');
+    return Array.from(els).map((el) => el.textContent || '');
+  } catch {
+    return [];
   }
 }
 

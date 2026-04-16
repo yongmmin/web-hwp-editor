@@ -1,4 +1,4 @@
-import type { Editor } from '@tiptap/react';
+import type { Editor, JSONContent } from '@tiptap/react';
 import type { ParsedDocument } from '../../types';
 import { writeHwpx, recollectHwpxMeta } from './hwpxWriter';
 import { writeHwp5, recollectHwp5Meta } from './hwp5Writer';
@@ -53,7 +53,12 @@ export async function saveDocumentInPlace(
   const html = editor.getHTML();
 
   if (format === 'hwp') {
-    const hwp5ExportMeta = recollectHwp5Meta(newBuffer);
+    const baseMeta = recollectHwp5Meta(newBuffer);
+    // Re-snapshot editor texts so the next save/export diffs against
+    // this save point rather than the original upload.
+    const json = editor.getJSON();
+    const editorOriginalTexts = collectTextsFromJson(json);
+    const hwp5ExportMeta = { ...baseMeta, editorOriginalTexts };
     return { html, rawHwpBuffer: newBuffer, hwp5ExportMeta };
   }
 
@@ -63,4 +68,30 @@ export async function saveDocumentInPlace(
   }
 
   return { html };
+}
+
+/** Walk TipTap JSON and return plain text per paragraph/heading. */
+function collectTextsFromJson(json: JSONContent): string[] {
+  const out: string[] = [];
+  walk(json);
+  return out;
+
+  function walk(node: JSONContent | undefined): void {
+    if (!node) return;
+    if (node.type === 'paragraph' || node.type === 'heading') {
+      out.push(textOf(node));
+      return;
+    }
+    if (Array.isArray(node.content)) {
+      for (const child of node.content) walk(child);
+    }
+  }
+
+  function textOf(node: JSONContent): string {
+    if (node.type === 'text' && typeof node.text === 'string') return node.text;
+    if (!Array.isArray(node.content)) return '';
+    let s = '';
+    for (const child of node.content) s += textOf(child);
+    return s;
+  }
 }

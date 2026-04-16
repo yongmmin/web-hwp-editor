@@ -116,9 +116,9 @@ export function AppShell() {
       {pendingFile && (
         <ConfirmReplaceModal
           fileName={pendingFile.name}
+          loading={isLoading}
           onConfirm={() => {
-            handleFile(pendingFile);
-            setPendingFile(null);
+            handleFile(pendingFile).then(() => setPendingFile(null));
           }}
           onCancel={() => setPendingFile(null)}
         />
