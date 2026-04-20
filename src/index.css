@@ -24,10 +24,13 @@ body {
   flex-direction: column;
   align-items: center;
   padding: 24px 0;
-  gap: 24px;
 }
 
-.document-page {
+/* Container that holds per-page visual frames and the editor layer.
+   The editor content lives in a single continuous `.editor-layer`; the
+   individual A4 frames behind it are pure visual chrome (white bg, shadow,
+   proper page boundaries). Canvas gray shows through between frames. */
+.pages-stack {
   --page-width: 210mm;
   --page-height: 297mm;
   --page-padding-top: 20mm;
@@ -35,14 +38,38 @@ body {
   --page-padding-bottom: 20mm;
   --page-padding-left: 25mm;
   --page-content-min-height: calc(var(--page-height) - var(--page-padding-top) - var(--page-padding-bottom));
+  position: relative;
   width: var(--page-width);
-  min-height: var(--page-height);
-  padding: var(--page-padding-top) var(--page-padding-right) var(--page-padding-bottom) var(--page-padding-left);
+  flex-shrink: 0;
+}
+
+.page-frame {
+  position: absolute;
+  left: 0;
+  right: 0;
   background: white;
   box-shadow:
     0 1px 3px rgba(0, 0, 0, 0.12),
     0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.editor-layer {
   position: relative;
+  z-index: 1;
+  padding: var(--page-padding-top) var(--page-padding-right) var(--page-padding-bottom) var(--page-padding-left);
+  min-height: var(--page-height);
+}
+
+/* Read-only HWP original viewer — single A4 frame, no pagination logic. */
+.readonly-page {
+  width: 210mm;
+  height: 297mm;
+  background: white;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.12),
+    0 4px 12px rgba(0, 0, 0, 0.08);
   flex-shrink: 0;
 }
 
@@ -127,36 +154,6 @@ body {
   margin: 22mm 0;
   break-before: page;
   page-break-before: always;
-}
-
-/* Visual gap between pages — covers the central PAGE_GAP_PX strip only.
-   The `::before` / `::after` shadows project outward into the prev-page
-   bottom padding and next-page top padding so each page reads as physically
-   distinct. */
-.page-gap-overlay {
-  position: absolute;
-  left: 0;
-  right: 0;
-  background: #d0d0d0;
-  pointer-events: none;
-  z-index: 5;
-}
-.page-gap-overlay::before,
-.page-gap-overlay::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 1px;
-  pointer-events: none;
-}
-.page-gap-overlay::before {
-  top: 0;
-  box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.18);
-}
-.page-gap-overlay::after {
-  bottom: 0;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
 }
 
 .tiptap table,
@@ -345,16 +342,24 @@ body {
 /* ─── 반응형: 작은 화면에서 페이지 축소 ─── */
 
 @media (max-width: 900px) {
-  .document-page,
+  .pages-stack,
   .preview-page {
     width: 100%;
     min-height: auto;
+  }
+
+  .page-frame {
     box-shadow: none;
   }
 
-  .document-page,
+  .editor-layer {
+    padding: 16px 20px;
+    min-height: auto;
+  }
+
   .preview-page {
     padding: 16px 20px;
+    box-shadow: none;
   }
 
   .tiptap {

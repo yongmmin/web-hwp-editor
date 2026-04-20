@@ -14,7 +14,7 @@ import { PageBreak } from './extensions/PageBreak';
 import { Table, TableCell, TableHeader, TableRow } from './extensions/Table';
 import { FindHighlight } from './extensions/FindHighlight';
 import { HwpReadonlyViewer } from './HwpReadonlyViewer';
-import { usePageBreaks } from './usePageBreaks';
+import { usePageBreaks, PAGE_GAP_PX } from './usePageBreaks';
 import { useDocumentStore } from '../../stores/documentStore';
 import { useWordSuggestion } from '../../hooks/useWordSuggestion';
 import { useTextRefinement } from '../../hooks/useTextRefinement';
@@ -70,7 +70,12 @@ export function DocumentEditor({ ollamaConnected, ollamaModel }: DocumentEditorP
     },
   });
 
-  const { gaps } = usePageBreaks(pageRef, [doc, editorTick, readonlyHwp]);
+  const { totalPages, pageHeightPx } = usePageBreaks(pageRef, [doc, editorTick, readonlyHwp]);
+
+  const stackMinHeightPx =
+    totalPages > 0 && pageHeightPx > 0
+      ? totalPages * pageHeightPx + (totalPages - 1) * PAGE_GAP_PX
+      : undefined;
 
   const { requestSuggestions, applySuggestion } = useWordSuggestion(editor, ollamaModel);
   const { requestRefinement, applyRefinement } = useTextRefinement(editor, ollamaModel);
@@ -158,24 +163,39 @@ export function DocumentEditor({ ollamaConnected, ollamaModel }: DocumentEditorP
             />
             <FindReplaceBar editor={editor} />
             <div className="document-canvas flex-1">
-              <div className="document-page" style={pageStyle} ref={pageRef}>
-                {editor && (
-                  <SelectionBubbleMenu
-                    editor={editor}
-                    ollamaConnected={ollamaConnected}
-                    ollamaModel={ollamaModel}
-                    onRequestRefinement={requestRefinement}
-                  />
-                )}
-                <EditorContent editor={editor} />
-                {gaps.map((g, i) => (
+              <div
+                className="pages-stack"
+                style={{
+                  ...pageStyle,
+                  ...(stackMinHeightPx ? { minHeight: `${stackMinHeightPx}px` } : null),
+                }}
+              >
+                {Array.from({ length: totalPages }, (_, i) => (
                   <div
                     key={i}
-                    className="page-gap-overlay"
-                    style={{ top: `${g.y}px`, height: `${g.height}px` }}
+                    className="page-frame"
+                    style={{
+                      top:
+                        pageHeightPx > 0
+                          ? `${i * (pageHeightPx + PAGE_GAP_PX)}px`
+                          : i === 0 ? 0 : undefined,
+                      height:
+                        pageHeightPx > 0 ? `${pageHeightPx}px` : 'var(--page-height)',
+                    }}
                     aria-hidden="true"
                   />
                 ))}
+                <div className="editor-layer" ref={pageRef}>
+                  {editor && (
+                    <SelectionBubbleMenu
+                      editor={editor}
+                      ollamaConnected={ollamaConnected}
+                      ollamaModel={ollamaModel}
+                      onRequestRefinement={requestRefinement}
+                    />
+                  )}
+                  <EditorContent editor={editor} />
+                </div>
               </div>
             </div>
             {saveFlash && (

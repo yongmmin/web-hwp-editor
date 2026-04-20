@@ -11,9 +11,10 @@ import { useState, useEffect, useRef, type RefObject } from 'react';
  *      the next page via an injected top-margin.
  *
  * The hook mutates the editor DOM (adds `margin-top` to the first element
- * of each new page) so the document-page div grows to fit all pages, and
- * returns gap positions (in `.document-page` local coordinates) so an
- * overlay component can draw the gray between-pages strip.
+ * of each new page) so the `.editor-layer` grows to fit all pages, and
+ * returns the total page count + measured A4 height so the consumer can
+ * render background `.page-frame` divs (one per page) at the right y-offsets.
+ * The gaps between frames are the canvas gray background showing through.
  *
  * All positions are computed via `getBoundingClientRect` diffs against the
  * page element so we don't depend on `offsetParent` (which varies with
@@ -32,12 +33,20 @@ export interface PageGap {
   pageAbove: number;
 }
 
+export interface PageBreakInfo {
+  gaps: PageGap[];
+  totalPages: number;
+  /** Measured full page height in px (A4 = ~1122px at 96dpi) */
+  pageHeightPx: number;
+}
+
 export function usePageBreaks(
   pageRef: RefObject<HTMLElement | null>,
   /** Extra deps (e.g. pageLayout) that should force a recompute */
   deps: ReadonlyArray<unknown> = [],
-): { gaps: PageGap[]; totalPages: number } {
+): PageBreakInfo {
   const [gaps, setGaps] = useState<PageGap[]>([]);
+  const [pageHeightPx, setPageHeightPx] = useState<number>(0);
   const appliedRef = useRef<HTMLElement[]>([]);
   const runningRef = useRef(false);
 
@@ -79,13 +88,15 @@ export function usePageBreaks(
       pageEl.removeChild(probe);
       if (pageHPx <= 0) return;
 
+      setPageHeightPx((prev) => (Math.abs(prev - pageHPx) > 0.5 ? pageHPx : prev));
+
       const contentH = pageHPx - padTop - padBot;
       if (contentH <= 0) return;
 
       const gapH = padBot + PAGE_GAP_PX + padTop;
       const newGaps: PageGap[] = [];
 
-      // ── Helper: child top/bottom in .document-page coord space ──
+      // ── Helper: child top/bottom in .editor-layer coord space ──
       const bounds = (child: HTMLElement) => {
         const pr = pageEl.getBoundingClientRect();
         const cr = child.getBoundingClientRect();
@@ -97,6 +108,7 @@ export function usePageBreaks(
 
       for (let safety = 0; safety < 500; safety++) {
         let target: HTMLElement | null = null;
+        let targetIsForced = false;
         const children = pm.children;
 
         for (let ci = 0; ci < children.length; ci++) {
@@ -113,6 +125,7 @@ export function usePageBreaks(
             // Skip forced breaks that already sit above the current page's start
             if (cTop < pageEndY - contentH - 2) continue;
             target = child;
+            targetIsForced = true;
             break;
           }
 
@@ -133,23 +146,37 @@ export function usePageBreaks(
 
         if (!target) break;
 
-        target.style.marginTop = `${gapH}px`;
+        // Natural top (pre-mutation) and natural CSS margin-top of target.
+        // We need both because inline `margin-top` REPLACES the CSS value —
+        // the target shifts by (inlineMt - naturalMt), not by inlineMt.
+        const { top: t0 } = bounds(target);
+        const naturalMt = parseFloat(getComputedStyle(target).marginTop) || 0;
+
+        // Forced breaks anchor the page boundary at their own position (hr acts
+        // as "page ends here, regardless of how full"). Overflow breaks anchor
+        // at the natural pageEndY.
+        const anchorY = targetIsForced ? t0 : pageEndY;
+
+        // We want target's new top to land at the next page's content-area start.
+        // Canvas layout: [page1 content][padBot][PAGE_GAP][padTop][page2 content]
+        // Page 2 content starts at anchorY + padBot + PAGE_GAP_PX + padTop = anchorY + gapH.
+        const desiredTop = anchorY + gapH;
+        const mt = Math.max(gapH, desiredTop - t0 + naturalMt);
+
+        target.style.marginTop = `${mt}px`;
         target.setAttribute(GAP_ATTR, 'true');
         appliedRef.current.push(target);
 
-        // Re-measure AFTER mutation (layout is synchronous when we read bounds)
-        const { top: newTop } = bounds(target);
-        // The gap region is (newTop - gapH) → newTop. Of that:
-        //   - first padBot px = previous page's bottom padding (white)
-        //   - middle PAGE_GAP_PX = canvas gap (gray)
-        //   - last padTop px = next page's top padding (white)
-        // The overlay only covers the middle strip.
+        // Gap region (gray canvas strip) sits at the bottom edge of the page rectangle.
         newGaps.push({
-          y: newTop - gapH + padBot,
+          y: anchorY + padBot,
           height: PAGE_GAP_PX,
           pageAbove: newGaps.length + 1,
         });
 
+        // Re-measure to get the actual new top (accounts for margin-collapse etc.),
+        // then advance pageEndY to the next page's content-area bottom.
+        const { top: newTop } = bounds(target);
         pageEndY = newTop + contentH;
       }
 
@@ -183,7 +210,7 @@ export function usePageBreaks(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageRef, ...deps]);
 
-  return { gaps, totalPages: gaps.length + 1 };
+  return { gaps, totalPages: gaps.length + 1, pageHeightPx };
 }
 
 function gapsEqual(a: PageGap[], b: PageGap[]): boolean {
