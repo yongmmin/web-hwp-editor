@@ -36,7 +36,6 @@ export function DocumentEditor({ ollamaConnected, ollamaModel }: DocumentEditorP
   const [saveFlash, setSaveFlash] = useState(false);
   const savingRef = useRef(false);
   const pageRef = useRef<HTMLDivElement>(null);
-  const [editorTick, setEditorTick] = useState(0);
 
   const editor = useEditor({
     extensions: [
@@ -65,16 +64,28 @@ export function DocumentEditor({ ollamaConnected, ollamaModel }: DocumentEditorP
         class: 'tiptap',
       },
     },
-    onUpdate: () => {
-      setEditorTick((t) => t + 1);
-    },
   });
 
-  const { totalPages, pageHeightPx } = usePageBreaks(pageRef, [doc, editorTick, readonlyHwp]);
+  const { gaps, totalPages, pageHeightPx } = usePageBreaks(pageRef, [doc, readonlyHwp]);
+
+  const pageTops: number[] = [];
+  for (let i = 0; i < totalPages; i += 1) {
+    if (i === 0) {
+      pageTops.push(0);
+      continue;
+    }
+    const priorGap = gaps[i - 1];
+    if (priorGap) {
+      pageTops.push(priorGap.y + priorGap.height);
+      continue;
+    }
+    const prevTop = pageTops[i - 1] ?? 0;
+    pageTops.push(prevTop + pageHeightPx + PAGE_GAP_PX);
+  }
 
   const stackMinHeightPx =
-    totalPages > 0 && pageHeightPx > 0
-      ? totalPages * pageHeightPx + (totalPages - 1) * PAGE_GAP_PX
+    pageTops.length > 0 && pageHeightPx > 0
+      ? pageTops[pageTops.length - 1] + pageHeightPx
       : undefined;
 
   const { requestSuggestions, applySuggestion } = useWordSuggestion(editor, ollamaModel);
@@ -177,7 +188,7 @@ export function DocumentEditor({ ollamaConnected, ollamaModel }: DocumentEditorP
                     style={{
                       top:
                         pageHeightPx > 0
-                          ? `${i * (pageHeightPx + PAGE_GAP_PX)}px`
+                          ? `${pageTops[i] ?? i * (pageHeightPx + PAGE_GAP_PX)}px`
                           : i === 0 ? 0 : undefined,
                       height:
                         pageHeightPx > 0 ? `${pageHeightPx}px` : 'var(--page-height)',

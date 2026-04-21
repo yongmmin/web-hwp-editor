@@ -368,33 +368,32 @@ function renderTable(tableEl: Element, styles: StyleMaps, images: Record<string,
     }
   }
 
-  const totalCols = colWidthsPt.length;
+  const totalCols = colWidthsPt.length || inferTableColumnCount(rows);
   const hasActualWidths = colWidthsPt.length > 0 && colWidthsPt.every(w => w > 0);
   const layoutStyle = totalCols > 0 ? ';table-layout:fixed' : '';
+  const fragments: string[] = [];
+  let pendingRows: string[] = [];
 
-  // Emit data-hwp-col-widths when we have actual ODT widths so TipTap can build colgroup.
-  // The legacy injector in hwpParser.ts will override this with HWP binary widths if available.
-  const colWidthsAttr = hasActualWidths
-    ? ` data-hwp-col-widths="${colWidthsPt.map(w => w.toFixed(2)).join(',')}"`
-    : '';
+  const flushPendingRows = () => {
+    if (pendingRows.length === 0) return;
+    fragments.push(openTableMarkup(tableWidth, layoutStyle, marginStyleFragment, totalCols, hasActualWidths, colWidthsPt));
+    fragments.push(pendingRows.join(''));
+    fragments.push('</tbody></table>');
+    pendingRows = [];
+  };
 
-  let html = `<table style="border-collapse:collapse;width:${tableWidth}${layoutStyle}${marginStyleFragment}"${colWidthsAttr}>`;
-
-  if (totalCols > 0) {
-    if (hasActualWidths) {
-      html += `<colgroup>${colWidthsPt.map(w => `<col style="width:${w.toFixed(2)}pt"/>`).join('')}</colgroup>`;
-    } else {
-      const colPct = (100 / totalCols).toFixed(3) + '%';
-      html += `<colgroup>${Array(totalCols).fill(`<col style="width:${colPct}"/>`).join('')}</colgroup>`;
-    }
-  }
-
-  html += '<tbody>';
   for (const row of rows) {
-    html += renderTableRow(row, styles, images);
+    const flowHtml = renderUnwrappedFlowRow(row, totalCols, styles, images);
+    if (flowHtml !== null) {
+      flushPendingRows();
+      if (flowHtml) fragments.push(flowHtml);
+      continue;
+    }
+    pendingRows.push(renderTableRow(row, styles, images));
   }
-  html += '</tbody></table>';
-  return html;
+
+  flushPendingRows();
+  return fragments.join('');
 }
 
 function renderTableRow(rowEl: Element, styles: StyleMaps, images: Record<string, string>): string {
@@ -444,6 +443,106 @@ function renderTableRow(rowEl: Element, styles: StyleMaps, images: Record<string
 
   html += '</tr>';
   return html;
+}
+
+function openTableMarkup(
+  tableWidth: string,
+  layoutStyle: string,
+  marginStyleFragment: string,
+  totalCols: number,
+  hasActualWidths: boolean,
+  colWidthsPt: number[],
+): string {
+  // Emit data-hwp-col-widths when we have actual ODT widths so TipTap can build colgroup.
+  // The legacy injector in hwpParser.ts will override this with HWP binary widths if available.
+  const colWidthsAttr = hasActualWidths
+    ? ` data-hwp-col-widths="${colWidthsPt.map(w => w.toFixed(2)).join(',')}"`
+    : '';
+
+  let html = `<table style="border-collapse:collapse;width:${tableWidth}${layoutStyle}${marginStyleFragment}"${colWidthsAttr}>`;
+  if (totalCols > 0) {
+    if (hasActualWidths) {
+      html += `<colgroup>${colWidthsPt.map(w => `<col style="width:${w.toFixed(2)}pt"/>`).join('')}</colgroup>`;
+    } else {
+      const colPct = (100 / totalCols).toFixed(3) + '%';
+      html += `<colgroup>${Array(totalCols).fill(`<col style="width:${colPct}"/>`).join('')}</colgroup>`;
+    }
+  }
+  html += '<tbody>';
+  return html;
+}
+
+function inferTableColumnCount(rows: Element[]): number {
+  let maxCols = 0;
+
+  for (const row of rows) {
+    let cols = 0;
+    for (const child of Array.from(row.childNodes)) {
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const el = child as Element;
+      if (el.namespaceURI !== NS.table) continue;
+      if (el.localName !== 'table-cell' && el.localName !== 'covered-table-cell') continue;
+
+      const repeat = Math.max(1, parseInt(el.getAttributeNS(NS.table, 'number-columns-repeated') || '1', 10));
+      const span = Math.max(1, parseInt(el.getAttributeNS(NS.table, 'number-columns-spanned') || '1', 10));
+      cols += repeat * span;
+    }
+    if (cols > maxCols) maxCols = cols;
+  }
+
+  return maxCols;
+}
+
+function renderUnwrappedFlowRow(
+  rowEl: Element,
+  totalCols: number,
+  styles: StyleMaps,
+  images: Record<string, string>,
+): string | null {
+  const rowChildren = Array.from(rowEl.childNodes).filter((child): child is Element =>
+    child.nodeType === Node.ELEMENT_NODE &&
+    (child as Element).namespaceURI === NS.table,
+  );
+  const cells = rowChildren.filter((el) => el.localName === 'table-cell');
+  const hasOnlyCoveredCellsBesideMain =
+    rowChildren.length === cells.length ||
+    rowChildren.every((el) => el.localName === 'table-cell' || el.localName === 'covered-table-cell');
+
+  if (!hasOnlyCoveredCellsBesideMain || cells.length !== 1) return null;
+
+  const cell = cells[0];
+  const colRepeat = Math.max(1, parseInt(cell.getAttributeNS(NS.table, 'number-columns-repeated') || '1', 10));
+  const colSpan = Math.max(1, parseInt(cell.getAttributeNS(NS.table, 'number-columns-spanned') || '1', 10));
+  const rowSpan = Math.max(1, parseInt(cell.getAttributeNS(NS.table, 'number-rows-spanned') || '1', 10));
+  const effectiveSpan = colRepeat * colSpan;
+
+  if (colRepeat !== 1 || rowSpan !== 1) return null;
+  if (totalCols > 1 && effectiveSpan < totalCols) return null;
+
+  let blockCount = 0;
+  let hasNestedTable = false;
+  for (const child of Array.from(cell.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      if ((child.textContent || '').trim()) blockCount += 1;
+      continue;
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) continue;
+    const el = child as Element;
+    if (el.namespaceURI === NS.table && el.localName === 'table') {
+      hasNestedTable = true;
+      blockCount += 1;
+      continue;
+    }
+    if (el.namespaceURI === NS.text && (el.localName === 'p' || el.localName === 'h')) {
+      blockCount += 1;
+    }
+  }
+
+  // Unwrap only rows that are effectively document-flow content, not short
+  // single-cell tables like titles or compact labels.
+  if (!hasNestedTable && blockCount < 2) return null;
+
+  return renderChildren(cell, styles, images).trim();
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
